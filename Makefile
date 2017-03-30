@@ -1,5 +1,5 @@
 CC=gcc
-INCS=i3ipc-glib-1.0 xcb
+INCS=i3ipc-glib-1.0 xcb xcb-randr
 CFLAGS=$(shell pkg-config --cflags $(INCS)) --std=c99 -Wall -Wextra
 LDFLAGS=$(shell pkg-config --libs $(INCS))
 HEADERS=$(wildcard src/*.h)

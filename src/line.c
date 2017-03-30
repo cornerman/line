@@ -1,9 +1,14 @@
+#include "config.h"
+
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #include <i3ipc-glib/i3ipc-glib.h>
 #include <xcb/xcb.h>
+#include <xcb/randr.h>
 
 static xcb_connection_t *conn = NULL;
 static xcb_screen_t *screen = NULL;
@@ -14,12 +19,16 @@ static xcb_gcontext_t urgent_fill;
 static xcb_gcontext_t focus_fill;
 static xcb_gcontext_t active_fill;
 static xcb_gcontext_t inactive_fill;
-static xcb_window_t line_window;
+static xcb_gcontext_t off_fill;
 
-static int line_height = 5;
-static int screen_width = 2560; //TODO correct monitor width
-static int min_ws_num = 0;
-static int max_ws_num = 12;
+typedef struct {
+    xcb_window_t win;
+    char *output;
+    uint16_t width;
+} line_window_t;
+
+static line_window_t *line_windows = NULL;
+static int line_windows_len = 0;
 
 enum {
 #define ATOM_DO(name) name,
@@ -73,7 +82,38 @@ static uint32_t color_pixel(unsigned short r, unsigned short g, unsigned short b
     return pixel;
 }
 
-static xcb_window_t create_dock_window(void)
+static void init_xcb(void) {
+    conn = xcb_connect(NULL, NULL);
+    screen = xcb_setup_roots_iterator(xcb_get_setup(conn)).data;
+
+    colormap = xcb_generate_id(conn);
+    xcb_create_colormap(conn, XCB_COLORMAP_ALLOC_NONE, colormap, screen->root, screen->root_visual);
+
+    black_fill = get_context(screen->black_pixel, screen->white_pixel);
+    white_fill = get_context(screen->white_pixel, screen->white_pixel);
+    urgent_fill = get_context(color_pixel(URGENT_COLOR), screen->white_pixel);
+    active_fill = get_context(color_pixel(ACTIVE_COLOR), screen->white_pixel);
+    focus_fill = get_context(color_pixel(FOCUS_COLOR), screen->white_pixel);
+    inactive_fill = get_context(color_pixel(INACTIVE_COLOR), screen->white_pixel);
+    off_fill = get_context(color_pixel(OFF_COLOR), screen->white_pixel);
+
+    request_atoms();
+}
+
+static void free_xcb(void) {
+    xcb_free_gc(conn, black_fill);
+    xcb_free_gc(conn, white_fill);
+    xcb_free_gc(conn, urgent_fill);
+    xcb_free_gc(conn, active_fill);
+    xcb_free_gc(conn, focus_fill);
+    xcb_free_gc(conn, inactive_fill);
+    xcb_free_colormap(conn, colormap);
+    xcb_disconnect(conn);
+    conn = NULL;
+    screen = NULL;
+}
+
+static xcb_window_t create_dock_window(xcb_randr_monitor_info_t *monitor)
 {
     xcb_window_t win = xcb_generate_id(conn);
 
@@ -85,8 +125,8 @@ static xcb_window_t create_dock_window(void)
         XCB_COPY_FROM_PARENT,
         win,
         screen->root,
-        0, 0,
-        screen_width, line_height,
+        monitor->x, monitor->y,
+        monitor->width, line_height,
         0,
         XCB_WINDOW_CLASS_INPUT_OUTPUT,
         screen->root_visual,
@@ -108,28 +148,93 @@ static xcb_window_t create_dock_window(void)
     return win;
 }
 
-static void draw_workspaces(GSList *replies, xcb_drawable_t drawable) {
+static void create_line_windows(void) {
+    xcb_randr_get_monitors_reply_t *monitors = xcb_randr_get_monitors_reply(conn, xcb_randr_get_monitors(conn, screen->root, 1), NULL);
+
+    int monitors_len = 0;
+    xcb_randr_monitor_info_iterator_t iter;
+    for (iter = xcb_randr_get_monitors_monitors_iterator(monitors);
+         iter.rem;
+         xcb_randr_monitor_info_next(&iter)) {
+        monitors_len++;
+    }
+
+    line_window_t *wins = malloc(sizeof(line_window_t) * monitors_len);
+    int idx = 0;
+    for (iter = xcb_randr_get_monitors_monitors_iterator(monitors);
+         iter.rem;
+         xcb_randr_monitor_info_next(&iter)) {
+        xcb_randr_monitor_info_t *monitor = iter.data;
+        xcb_get_atom_name_reply_t *atom_reply = xcb_get_atom_name_reply(conn, xcb_get_atom_name(conn, monitor->name), NULL);
+        char *name;
+        asprintf(&name, "%.*s", xcb_get_atom_name_name_length(atom_reply), xcb_get_atom_name_name(atom_reply));
+
+        xcb_window_t win = create_dock_window(monitor);
+        line_window_t line_win = { win, name, monitor->width };
+        wins[idx] = line_win;
+
+        free(atom_reply);
+
+        idx++;
+    }
+
+    free(monitors);
+
+    line_windows = wins;
+    line_windows_len = monitors_len;
+}
+
+static void free_line_windows(void) {
+    int i;
+    for (i = 0; i < line_windows_len; i++) {
+        line_window_t line = line_windows[i];
+        xcb_destroy_window(conn, line.win);
+        free(line.output);
+    }
+
+    free(line_windows);
+    line_windows = NULL;
+    line_windows_len = 0;
+}
+
+static void draw_workspaces(GSList *replies, xcb_drawable_t drawable, line_window_t line) {
     const GSList *reply;
     i3ipcWorkspaceReply *ws;
+    int max_ws_num = INT_MIN;
+    int min_ws_num = INT_MAX;
+    for (reply = replies; reply; reply = reply->next)
+    {
+        ws = reply->data;
+        if (strcmp(ws->output, line.output) != 0) continue;
+        if (ws->num > max_ws_num) max_ws_num = ws->num;
+        if (ws->num < min_ws_num) min_ws_num = ws->num;
+    }
+
     int num_ws = max_ws_num - min_ws_num + 1;
     if (num_ws > 0) {
         xcb_rectangle_t rectangles[num_ws];
-        int width = screen_width / num_ws;
+        xcb_rectangle_t inner_rectangles[num_ws];
+        int width = line.width / num_ws;
         int curr_pos = 0;
         int curr_num;
         for (curr_num = 0; curr_num < num_ws; curr_num++)
         {
-            int curr_width = (curr_num == num_ws - 1) ? screen_width - curr_pos : width;
+            int curr_width = (curr_num == num_ws - 1) ? line.width - curr_pos : width;
             xcb_rectangle_t rect = { curr_pos, 0, curr_width, line_height };
+            xcb_rectangle_t inner_rect = { rect.x + 1, rect.y + 1, rect.width - 2 , rect.height - 2 };
             rectangles[curr_num] = rect;
+            inner_rectangles[curr_num] = inner_rect;
             curr_pos += curr_width;
         }
 
         xcb_poly_rectangle(conn, drawable, white_fill, num_ws, rectangles);
+        xcb_poly_fill_rectangle(conn, drawable, off_fill, num_ws, inner_rectangles);
 
         for (reply = replies; reply; reply = reply->next)
         {
             ws = reply->data;
+            if (strcmp(ws->output, line.output) != 0) continue;
+
             if (ws->num >= min_ws_num && ws->num <= max_ws_num) {
                 xcb_gcontext_t foreground;
                 if (ws->urgent)
@@ -141,8 +246,7 @@ static void draw_workspaces(GSList *replies, xcb_drawable_t drawable) {
                 else
                     foreground = inactive_fill;
 
-                xcb_rectangle_t orig_rect = rectangles[ws->num - min_ws_num];
-                xcb_rectangle_t rects[] = { { orig_rect.x + 1, orig_rect.y + 1, orig_rect.width - 2, orig_rect.height - 2 } };
+                xcb_rectangle_t rects[] = { inner_rectangles[ws->num - min_ws_num] };
                 xcb_poly_fill_rectangle(conn, drawable, foreground, 1, rects);
             }
         }
@@ -150,45 +254,39 @@ static void draw_workspaces(GSList *replies, xcb_drawable_t drawable) {
 }
 
 static void draw_line_content(i3ipcConnection *i3) {
-    xcb_pixmap_t pixmap = xcb_generate_id(conn);
-    xcb_create_pixmap(conn, screen->root_depth, pixmap, screen->root, screen_width, line_height);
-    xcb_rectangle_t rectangles[] = { { 0, 0, screen_width, line_height } };
-    xcb_poly_fill_rectangle(conn, pixmap, white_fill, 1, rectangles);
+    int i;
+    for (i = 0; i < line_windows_len; i++) {
+        line_window_t line = line_windows[i];
+        xcb_pixmap_t pixmap = xcb_generate_id(conn);
+        xcb_create_pixmap(conn, screen->root_depth, pixmap, screen->root, line.width, line_height);
+        xcb_rectangle_t rectangles[] = { { 0, 0, line.width, line_height } };
+        xcb_poly_fill_rectangle(conn, pixmap, white_fill, 1, rectangles);
 
-    GSList *replies = i3ipc_connection_get_workspaces(i3, NULL);
-    draw_workspaces(replies, pixmap);
-    g_slist_free_full(replies, (GDestroyNotify) i3ipc_workspace_reply_free);
+        GSList *replies = i3ipc_connection_get_workspaces(i3, NULL);
+        draw_workspaces(replies, pixmap, line);
+        fflush(stdout);
+        g_slist_free_full(replies, (GDestroyNotify) i3ipc_workspace_reply_free);
+        fflush(stdout);
 
-    xcb_copy_area(conn, pixmap, line_window, black_fill, 0, 0, 0, 0, screen_width, line_height);
+        xcb_copy_area(conn, pixmap, line.win, black_fill, 0, 0, 0, 0, line.width, line_height);
+        fflush(stdout);
+
+        xcb_free_pixmap(conn, pixmap);
+        fflush(stdout);
+    }
 
     xcb_flush(conn);
-
-    xcb_free_pixmap(conn, pixmap);
 }
 
-static void workspace_event_handler(i3ipcConnection *i3, i3ipcWorkspaceEvent *ev, gpointer data)
-{
+static void workspace_event_handler(i3ipcConnection *i3, i3ipcWorkspaceEvent *ev, gpointer data) {
     //TODO only partial update with ev data?
     printf("event: %s\n", ev->change);
     draw_line_content(i3);
 }
 
 int main(void) {
-    conn = xcb_connect(NULL, NULL);
-    screen = xcb_setup_roots_iterator(xcb_get_setup(conn)).data;
-
-    request_atoms();
-    line_window = create_dock_window();
-
-    colormap = xcb_generate_id(conn);
-    xcb_create_colormap(conn, XCB_COLORMAP_ALLOC_NONE, colormap, line_window, screen->root_visual);
-
-    black_fill = get_context(screen->black_pixel, screen->white_pixel);
-    white_fill = get_context(screen->white_pixel, screen->white_pixel);
-    urgent_fill = get_context(color_pixel(65535, 0, 0), screen->white_pixel);
-    active_fill = get_context(color_pixel(0, 65535, 0), screen->white_pixel);
-    focus_fill = get_context(color_pixel(0, 0, 65535), screen->white_pixel);
-    inactive_fill = get_context(color_pixel(30000, 30000, 30000), screen->white_pixel);
+    init_xcb();
+    create_line_windows();
 
     i3ipcConnection *i3 = i3ipc_connection_new(NULL, NULL);
     draw_line_content(i3);
@@ -197,6 +295,12 @@ int main(void) {
     i3ipc_connection_on(i3, "workspace::urgent", g_cclosure_new(G_CALLBACK(workspace_event_handler), NULL, NULL), NULL);
 
     i3ipc_connection_main(i3);
+
+    g_object_unref(i3);
+
+    free_line_windows();
+
+    free_xcb();
 
     return 0;
 }
