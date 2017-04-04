@@ -273,10 +273,20 @@ static void draw_line_content(i3ipcConnection *i3) {
     xcb_flush(conn);
 }
 
-static void workspace_event_handler(i3ipcConnection *i3, i3ipcWorkspaceEvent *ev, gpointer data) {
+static void workspace_event_handler(i3ipcConnection *i3, i3ipcWorkspaceEvent *ev) {
     //TODO only partial update with ev data?
     printf("event: %s\n", ev->change);
     draw_line_content(i3);
+}
+
+static void window_event_handler(i3ipcConnection *i3, i3ipcWindowEvent *ev) {
+    //TODO only redraw the affected output(s), for global fullscreen -> all
+    printf("event: %s\n", ev->change);
+    gboolean fullscreen;
+    g_object_get(ev->container, "fullscreen-mode", &fullscreen, NULL);
+    if (!fullscreen) {
+        draw_line_content(i3);
+    }
 }
 
 int main(void) {
@@ -288,6 +298,7 @@ int main(void) {
     i3ipc_connection_on(i3, "workspace::init", g_cclosure_new(G_CALLBACK(workspace_event_handler), NULL, NULL), NULL);
     i3ipc_connection_on(i3, "workspace::focus", g_cclosure_new(G_CALLBACK(workspace_event_handler), NULL, NULL), NULL);
     i3ipc_connection_on(i3, "workspace::urgent", g_cclosure_new(G_CALLBACK(workspace_event_handler), NULL, NULL), NULL);
+    i3ipc_connection_on(i3, "window::fullscreen_mode", g_cclosure_new(G_CALLBACK(window_event_handler), NULL, NULL), NULL);
 
     i3ipc_connection_main(i3);
 
