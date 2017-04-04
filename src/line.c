@@ -200,8 +200,7 @@ static void free_line_windows(void) {
 static void draw_workspaces(GSList *replies, xcb_drawable_t drawable, line_window_t line) {
     const GSList *reply;
     i3ipcWorkspaceReply *ws;
-    int max_ws_num = INT_MIN;
-    int min_ws_num = INT_MAX;
+    int max_ws_num = INT_MIN, min_ws_num = INT_MAX;
     for (reply = replies; reply; reply = reply->next)
     {
         ws = reply->data;
@@ -213,7 +212,6 @@ static void draw_workspaces(GSList *replies, xcb_drawable_t drawable, line_windo
     int num_ws = max_ws_num - min_ws_num + 1;
     if (num_ws > 0) {
         xcb_rectangle_t rectangles[num_ws];
-        xcb_rectangle_t inner_rectangles[num_ws];
         int width = line.width / num_ws;
         int curr_pos = 0;
         int curr_num;
@@ -221,14 +219,11 @@ static void draw_workspaces(GSList *replies, xcb_drawable_t drawable, line_windo
         {
             int curr_width = (curr_num == num_ws - 1) ? line.width - curr_pos : width;
             xcb_rectangle_t rect = { curr_pos, 0, curr_width, line_height };
-            xcb_rectangle_t inner_rect = { rect.x + 1, rect.y + 1, rect.width - 2 , rect.height - 2 };
             rectangles[curr_num] = rect;
-            inner_rectangles[curr_num] = inner_rect;
-            curr_pos += curr_width;
+            curr_pos += curr_width + border_width;
         }
 
-        xcb_poly_rectangle(conn, drawable, white_fill, num_ws, rectangles);
-        xcb_poly_fill_rectangle(conn, drawable, off_fill, num_ws, inner_rectangles);
+        xcb_poly_fill_rectangle(conn, drawable, off_fill, num_ws, rectangles);
 
         for (reply = replies; reply; reply = reply->next)
         {
@@ -246,7 +241,7 @@ static void draw_workspaces(GSList *replies, xcb_drawable_t drawable, line_windo
                 else
                     foreground = inactive_fill;
 
-                xcb_rectangle_t rects[] = { inner_rectangles[ws->num - min_ws_num] };
+                xcb_rectangle_t rects[] = { rectangles[ws->num - min_ws_num] };
                 xcb_poly_fill_rectangle(conn, drawable, foreground, 1, rects);
             }
         }

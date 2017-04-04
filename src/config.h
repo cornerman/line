@@ -7,6 +7,7 @@
 #define INACTIVE_COLOR 40000, 40000, 40000
 #define OFF_COLOR 10000, 10000, 10000
 
-static int line_height = 8;
+static int line_height = 3;
+static int border_width = 6;
 
 #endif
