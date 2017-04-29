@@ -107,6 +107,7 @@ static void free_xcb(void) {
     xcb_free_gc(conn, active_fill);
     xcb_free_gc(conn, focus_fill);
     xcb_free_gc(conn, inactive_fill);
+    xcb_free_gc(conn, off_fill);
     xcb_free_colormap(conn, colormap);
     xcb_disconnect(conn);
     conn = NULL;
