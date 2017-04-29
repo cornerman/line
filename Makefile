@@ -1,7 +1,7 @@
 CC=gcc
 INCS=i3ipc-glib-1.0 xcb xcb-randr
 CFLAGS=$(shell pkg-config --cflags $(INCS)) --std=c99 -Wall -Wextra
-LDFLAGS=$(shell pkg-config --libs $(INCS))
+LDFLAGS=$(shell pkg-config --libs $(INCS)) -pthread
 HEADERS=$(wildcard src/*.h)
 SOURCES=$(wildcard src/*.c)
 OBJECTS=$(SOURCES:.c=.o)

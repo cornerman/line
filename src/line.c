@@ -1,17 +1,19 @@
 #include "config.h"
 
 #define _GNU_SOURCE
+#include <limits.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <limits.h>
+#include <unistd.h>
 
 #include <i3ipc-glib/i3ipc-glib.h>
-#include <xcb/xcb.h>
 #include <xcb/randr.h>
+#include <xcb/xcb.h>
 
-static xcb_connection_t *conn = NULL;
-static xcb_screen_t *screen = NULL;
+static xcb_connection_t* conn = NULL;
+static xcb_screen_t* screen = NULL;
 static xcb_colormap_t colormap;
 static xcb_gcontext_t black_fill;
 static xcb_gcontext_t white_fill;
@@ -23,11 +25,11 @@ static xcb_gcontext_t off_fill;
 
 typedef struct {
     xcb_window_t win;
-    char *output;
+    char* output;
     uint16_t width;
 } line_window_t;
 
-static line_window_t *line_windows = NULL;
+static line_window_t* line_windows = NULL;
 static int line_windows_len = 0;
 
 enum {
@@ -48,20 +50,21 @@ static void request_atoms(void)
 #include "xcb_atoms.def"
 #undef ATOM_DO
 
-#define ATOM_DO(name)                                                        \
+#define ATOM_DO(name)                                              \
     reply = xcb_intern_atom_reply(conn, atom_cookies[name], NULL); \
-    if (reply == NULL) {                                                     \
-        fprintf(stderr, "Could not get atom %s\n", #name);                   \
-        exit(EXIT_FAILURE);                                                  \
-    }                                                                        \
-    atoms[name] = reply->atom;                                               \
+    if (reply == NULL) {                                           \
+        fprintf(stderr, "Could not get atom %s\n", #name);         \
+        exit(EXIT_FAILURE);                                        \
+    }                                                              \
+    atoms[name] = reply->atom;                                     \
     free(reply);
 
 #include "xcb_atoms.def"
 #undef ATOM_DO
 }
 
-static xcb_gcontext_t get_context(uint32_t fg_color, uint32_t bg_color) {
+static xcb_gcontext_t get_context(uint32_t fg_color, uint32_t bg_color)
+{
     xcb_gcontext_t foreground = xcb_generate_id(conn);
 
     uint32_t mask;
@@ -74,15 +77,17 @@ static xcb_gcontext_t get_context(uint32_t fg_color, uint32_t bg_color) {
     return foreground;
 }
 
-static uint32_t color_pixel(unsigned short r, unsigned short g, unsigned short b) {
-    xcb_alloc_color_reply_t *reply = xcb_alloc_color_reply(conn, xcb_alloc_color(conn, colormap, r, g, b), NULL);
+static uint32_t color_pixel(unsigned short r, unsigned short g, unsigned short b)
+{
+    xcb_alloc_color_reply_t* reply = xcb_alloc_color_reply(conn, xcb_alloc_color(conn, colormap, r, g, b), NULL);
     uint32_t pixel = reply->pixel;
-    free (reply);
+    free(reply);
 
     return pixel;
 }
 
-static void init_xcb(void) {
+static void init_xcb(void)
+{
     conn = xcb_connect(NULL, NULL);
     screen = xcb_setup_roots_iterator(xcb_get_setup(conn)).data;
 
@@ -100,7 +105,8 @@ static void init_xcb(void) {
     request_atoms();
 }
 
-static void free_xcb(void) {
+static void free_xcb(void)
+{
     xcb_free_gc(conn, black_fill);
     xcb_free_gc(conn, white_fill);
     xcb_free_gc(conn, urgent_fill);
@@ -114,7 +120,7 @@ static void free_xcb(void) {
     screen = NULL;
 }
 
-static xcb_window_t create_dock_window(xcb_randr_monitor_info_t *monitor)
+static xcb_window_t create_dock_window(xcb_randr_monitor_info_t* monitor)
 {
     xcb_window_t win = xcb_generate_id(conn);
 
@@ -149,25 +155,24 @@ static xcb_window_t create_dock_window(xcb_randr_monitor_info_t *monitor)
     return win;
 }
 
-static void create_line_windows(void) {
-    xcb_randr_get_monitors_reply_t *monitors = xcb_randr_get_monitors_reply(conn, xcb_randr_get_monitors(conn, screen->root, 1), NULL);
+static void create_line_windows(void)
+{
+    xcb_randr_get_monitors_reply_t* monitors = xcb_randr_get_monitors_reply(conn, xcb_randr_get_monitors(conn, screen->root, 1), NULL);
 
     int monitors_len = 0;
     xcb_randr_monitor_info_iterator_t iter;
-    for (iter = xcb_randr_get_monitors_monitors_iterator(monitors);
-         iter.rem;
-         xcb_randr_monitor_info_next(&iter)) {
+    for (iter = xcb_randr_get_monitors_monitors_iterator(monitors); iter.rem; xcb_randr_monitor_info_next(&iter)) {
         monitors_len++;
     }
 
-    line_window_t *wins = malloc(sizeof(line_window_t) * monitors_len);
+    line_window_t* wins = malloc(sizeof(line_window_t) * monitors_len);
     int idx = 0;
     for (iter = xcb_randr_get_monitors_monitors_iterator(monitors);
          iter.rem;
          xcb_randr_monitor_info_next(&iter)) {
-        xcb_randr_monitor_info_t *monitor = iter.data;
-        xcb_get_atom_name_reply_t *atom_reply = xcb_get_atom_name_reply(conn, xcb_get_atom_name(conn, monitor->name), NULL);
-        char *name;
+        xcb_randr_monitor_info_t* monitor = iter.data;
+        xcb_get_atom_name_reply_t* atom_reply = xcb_get_atom_name_reply(conn, xcb_get_atom_name(conn, monitor->name), NULL);
+        char* name;
         asprintf(&name, "%.*s", xcb_get_atom_name_name_length(atom_reply), xcb_get_atom_name_name(atom_reply));
 
         xcb_window_t win = create_dock_window(monitor);
@@ -185,9 +190,9 @@ static void create_line_windows(void) {
     line_windows_len = monitors_len;
 }
 
-static void free_line_windows(void) {
-    int i;
-    for (i = 0; i < line_windows_len; i++) {
+static void free_line_windows(void)
+{
+    for (int i = 0; i < line_windows_len; i++) {
         line_window_t line = line_windows[i];
         xcb_destroy_window(conn, line.win);
         free(line.output);
@@ -198,16 +203,19 @@ static void free_line_windows(void) {
     line_windows_len = 0;
 }
 
-static void draw_workspaces(GSList *replies, xcb_drawable_t drawable, line_window_t line) {
-    const GSList *reply;
-    i3ipcWorkspaceReply *ws;
+static void draw_workspaces(GSList* replies, xcb_drawable_t drawable, line_window_t line)
+{
+    const GSList* reply;
+    i3ipcWorkspaceReply* ws;
     int max_ws_num = INT_MIN, min_ws_num = INT_MAX;
-    for (reply = replies; reply; reply = reply->next)
-    {
+    for (reply = replies; reply; reply = reply->next) {
         ws = reply->data;
-        if (strcmp(ws->output, line.output) != 0) continue;
-        if (ws->num > max_ws_num) max_ws_num = ws->num;
-        if (ws->num < min_ws_num) min_ws_num = ws->num;
+        if (strcmp(ws->output, line.output) != 0)
+            continue;
+        if (ws->num > max_ws_num)
+            max_ws_num = ws->num;
+        if (ws->num < min_ws_num)
+            min_ws_num = ws->num;
     }
 
     int num_ws = max_ws_num - min_ws_num + 1;
@@ -215,9 +223,7 @@ static void draw_workspaces(GSList *replies, xcb_drawable_t drawable, line_windo
         xcb_rectangle_t rectangles[num_ws];
         int width = line.width / num_ws;
         int curr_pos = 0;
-        int curr_num;
-        for (curr_num = 0; curr_num < num_ws; curr_num++)
-        {
+        for (int curr_num = 0; curr_num < num_ws; curr_num++) {
             int curr_width = (curr_num == num_ws - 1) ? line.width - curr_pos : width;
             xcb_rectangle_t rect = { curr_pos, 0, curr_width, line_height };
             rectangles[curr_num] = rect;
@@ -226,10 +232,10 @@ static void draw_workspaces(GSList *replies, xcb_drawable_t drawable, line_windo
 
         xcb_poly_fill_rectangle(conn, drawable, off_fill, num_ws, rectangles);
 
-        for (reply = replies; reply; reply = reply->next)
-        {
+        for (reply = replies; reply; reply = reply->next) {
             ws = reply->data;
-            if (strcmp(ws->output, line.output) != 0) continue;
+            if (strcmp(ws->output, line.output) != 0)
+                continue;
 
             if (ws->num >= min_ws_num && ws->num <= max_ws_num) {
                 xcb_gcontext_t foreground;
@@ -249,52 +255,49 @@ static void draw_workspaces(GSList *replies, xcb_drawable_t drawable, line_windo
     }
 }
 
-static void draw_line_content(i3ipcConnection *i3) {
-    int i;
-    for (i = 0; i < line_windows_len; i++) {
+static void draw_line_content(i3ipcConnection* i3)
+{
+    for (int i = 0; i < line_windows_len; i++) {
         line_window_t line = line_windows[i];
         xcb_pixmap_t pixmap = xcb_generate_id(conn);
         xcb_create_pixmap(conn, screen->root_depth, pixmap, screen->root, line.width, line_height);
         xcb_rectangle_t rectangles[] = { { 0, 0, line.width, line_height } };
         xcb_poly_fill_rectangle(conn, pixmap, white_fill, 1, rectangles);
 
-        GSList *replies = i3ipc_connection_get_workspaces(i3, NULL);
+        GSList* replies = i3ipc_connection_get_workspaces(i3, NULL);
         draw_workspaces(replies, pixmap, line);
-        fflush(stdout);
-        g_slist_free_full(replies, (GDestroyNotify) i3ipc_workspace_reply_free);
-        fflush(stdout);
+        g_slist_free_full(replies, (GDestroyNotify)i3ipc_workspace_reply_free);
 
         xcb_copy_area(conn, pixmap, line.win, black_fill, 0, 0, 0, 0, line.width, line_height);
-        fflush(stdout);
 
         xcb_free_pixmap(conn, pixmap);
-        fflush(stdout);
     }
 
     xcb_flush(conn);
 }
 
-static void workspace_event_handler(i3ipcConnection *i3, i3ipcWorkspaceEvent *ev) {
+static void workspace_event_handler(i3ipcConnection* i3, i3ipcWorkspaceEvent* ev)
+{
     //TODO only partial update with ev data?
     printf("event: %s\n", ev->change);
     draw_line_content(i3);
 }
 
-static void window_event_handler(i3ipcConnection *i3, i3ipcWindowEvent *ev) {
+static void window_event_handler(i3ipcConnection* i3, i3ipcWindowEvent* ev)
+{
     //TODO only redraw the affected output(s), for global fullscreen -> all
     printf("event: %s\n", ev->change);
     gboolean fullscreen;
     g_object_get(ev->container, "fullscreen-mode", &fullscreen, NULL);
     if (!fullscreen) {
+        //TODO: why do we need to redraw when coming from fullscreen mode?
         draw_line_content(i3);
     }
 }
 
-int main(void) {
-    init_xcb();
-    create_line_windows();
-
-    i3ipcConnection *i3 = i3ipc_connection_new(NULL, NULL);
+static void i3ipc(void)
+{
+    i3ipcConnection* i3 = i3ipc_connection_new(NULL, NULL);
     draw_line_content(i3);
     i3ipc_connection_on(i3, "workspace::init", g_cclosure_new(G_CALLBACK(workspace_event_handler), NULL, NULL), NULL);
     i3ipc_connection_on(i3, "workspace::focus", g_cclosure_new(G_CALLBACK(workspace_event_handler), NULL, NULL), NULL);
@@ -304,6 +307,27 @@ int main(void) {
     i3ipc_connection_main(i3);
 
     g_object_unref(i3);
+}
+
+int main(void)
+{
+    init_xcb();
+    create_line_windows();
+
+    void* funcs[] = {
+        &i3ipc
+    };
+
+    int num_funcs = sizeof(funcs) / sizeof(funcs[0]);
+    pthread_t threads[num_funcs];
+
+    for (int i = 0; i < num_funcs; i++) {
+        pthread_create(&threads[i], NULL, funcs[i], NULL);
+    }
+
+    for (int i = 0; i < num_funcs; i++) {
+        pthread_join(threads[i], NULL);
+    }
 
     free_line_windows();
 
