@@ -23,6 +23,11 @@ static xcb_gcontext_t active_fill;
 static xcb_gcontext_t inactive_fill;
 static xcb_gcontext_t off_fill;
 
+#include <alsa/asoundlib.h>
+#include <stdio.h>
+
+#define MAX_SND_CARDS 256
+
 typedef struct {
     xcb_window_t win;
     char* output;
@@ -255,7 +260,7 @@ static void draw_workspaces(GSList* replies, xcb_drawable_t drawable, line_windo
     }
 }
 
-static void draw_line_content(i3ipcConnection* i3)
+static void draw_line_workspaces(i3ipcConnection* i3)
 {
     for (int i = 0; i < line_windows_len; i++) {
         line_window_t line = line_windows[i];
@@ -269,7 +274,6 @@ static void draw_line_content(i3ipcConnection* i3)
         g_slist_free_full(replies, (GDestroyNotify)i3ipc_workspace_reply_free);
 
         xcb_copy_area(conn, pixmap, line.win, black_fill, 0, 0, 0, 0, line.width, line_height);
-
         xcb_free_pixmap(conn, pixmap);
     }
 
@@ -280,7 +284,7 @@ static void workspace_event_handler(i3ipcConnection* i3, i3ipcWorkspaceEvent* ev
 {
     //TODO only partial update with ev data?
     printf("event: %s\n", ev->change);
-    draw_line_content(i3);
+    draw_line_workspaces(i3);
 }
 
 static void window_event_handler(i3ipcConnection* i3, i3ipcWindowEvent* ev)
@@ -291,14 +295,14 @@ static void window_event_handler(i3ipcConnection* i3, i3ipcWindowEvent* ev)
     g_object_get(ev->container, "fullscreen-mode", &fullscreen, NULL);
     if (!fullscreen) {
         //TODO: why do we need to redraw when coming from fullscreen mode?
-        draw_line_content(i3);
+        draw_line_workspaces(i3);
     }
 }
 
 static void i3ipc(void)
 {
     i3ipcConnection* i3 = i3ipc_connection_new(NULL, NULL);
-    draw_line_content(i3);
+    draw_line_workspaces(i3);
     i3ipc_connection_on(i3, "workspace::init", g_cclosure_new(G_CALLBACK(workspace_event_handler), NULL, NULL), NULL);
     i3ipc_connection_on(i3, "workspace::focus", g_cclosure_new(G_CALLBACK(workspace_event_handler), NULL, NULL), NULL);
     i3ipc_connection_on(i3, "workspace::urgent", g_cclosure_new(G_CALLBACK(workspace_event_handler), NULL, NULL), NULL);
@@ -309,13 +313,195 @@ static void i3ipc(void)
     g_object_unref(i3);
 }
 
+static int open_ctl(const char* name, snd_ctl_t** ctlp)
+{
+    snd_ctl_t* ctl;
+    if (snd_ctl_open(&ctl, name, SND_CTL_READONLY) < 0) {
+        fprintf(stderr, "cannot open ctl %s\n", name);
+        return 1;
+    }
+
+    if (snd_ctl_subscribe_events(ctl, 1) < 0) {
+        fprintf(stderr, "cannot subscribe events on ctl %s\n", name);
+        snd_ctl_close(ctl);
+        return 1;
+    }
+
+    *ctlp = ctl;
+    return 0;
+}
+
+int audio_volume(snd_ctl_event_t *event, long* outvol)
+{
+    //TODO get from event, this is not the right card
+    static const char* card = "default";
+    static const char* mix_name = "Master";
+    int mix_index = snd_ctl_event_elem_get_index(event);
+
+    snd_mixer_selem_id_t* sid;
+    snd_mixer_selem_id_alloca(&sid);
+
+    snd_mixer_selem_id_set_index(sid, mix_index);
+    snd_mixer_selem_id_set_name(sid, mix_name);
+
+    snd_mixer_t* handle;
+    if (snd_mixer_open(&handle, 0) < 0) {
+        fprintf(stderr, "cannot open mixer\n");
+        return 1;
+    }
+
+    if (snd_mixer_attach(handle, card) < 0) {
+        fprintf(stderr, "cannot attach to mixer\n");
+        snd_mixer_close(handle);
+        return 1;
+    }
+
+    if (snd_mixer_selem_register(handle, NULL, NULL) < 0) {
+        fprintf(stderr, "cannot register on mixer\n");
+        snd_mixer_close(handle);
+        return 1;
+    }
+
+    if (snd_mixer_load(handle) < 0) {
+        fprintf(stderr, "cannot load mixer\n");
+        snd_mixer_close(handle);
+        return 1;
+    }
+
+    snd_mixer_elem_t *elem = snd_mixer_find_selem(handle, sid);
+    if (elem == NULL) {
+        fprintf(stderr, "cannot find mixer element\n");
+        snd_mixer_close(handle);
+        return 1;
+    }
+
+    long minv, maxv;
+    if (snd_mixer_selem_get_playback_volume_range(elem, &minv, &maxv) < 0) {
+        fprintf(stderr, "cannot get volume range\n");
+        snd_mixer_close(handle);
+        return 1;
+    }
+
+    long volume;
+    if(snd_mixer_selem_get_playback_volume(elem, 0, &volume) < 0) {
+        fprintf(stderr, "cannot get volume\n");
+        snd_mixer_close(handle);
+        return 1;
+    }
+
+    *outvol = 100 * (volume - minv) / (maxv - minv);
+
+    snd_mixer_close(handle);
+    return 0;
+}
+
+static void draw_volume(long volume, xcb_drawable_t drawable, line_window_t line)
+{
+    int width = line.width * volume / 100;
+    xcb_rectangle_t rectangles[] = { { 0, 0, width, line_height } };
+    xcb_poly_fill_rectangle(conn, drawable, black_fill, 1, rectangles);
+}
+
+static int draw_line_volume(int card, snd_ctl_t* ctl)
+{
+    snd_ctl_event_t* event;
+    snd_ctl_event_alloca(&event);
+    if (snd_ctl_read(ctl, event) < 0) {
+        fprintf(stderr, "cannot read from event\n");
+        snd_ctl_event_free(event);
+        return 1;
+    }
+
+    if (snd_ctl_event_get_type(event) == SND_CTL_EVENT_ELEM
+        && snd_ctl_event_elem_get_mask(event) & SND_CTL_EVENT_MASK_VALUE) {
+
+        printf("snd event: card %d, #%d (%i,%i,%i,%s,%i)\n",
+            card,
+            snd_ctl_event_elem_get_numid(event),
+            snd_ctl_event_elem_get_interface(event),
+            snd_ctl_event_elem_get_device(event),
+            snd_ctl_event_elem_get_subdevice(event),
+            snd_ctl_event_elem_get_name(event),
+            snd_ctl_event_elem_get_index(event));
+
+        long volume;
+        if (audio_volume(event, &volume)) {
+            fprintf(stderr, "cannot get audio volume\n");
+            /* snd_ctl_event_free(event); */
+            return 1;
+        }
+
+        printf("volume: %ld\n", volume);
+        for (int i = 0; i < line_windows_len; i++) {
+            line_window_t line = line_windows[i];
+            xcb_pixmap_t pixmap = xcb_generate_id(conn);
+            xcb_create_pixmap(conn, screen->root_depth, pixmap, screen->root, line.width, line_height);
+            xcb_rectangle_t rectangles[] = { { 0, 0, line.width, line_height } };
+            xcb_poly_fill_rectangle(conn, pixmap, white_fill, 1, rectangles);
+
+            draw_volume(volume, pixmap, line);
+
+            xcb_copy_area(conn, pixmap, line.win, black_fill, 0, 0, 0, 0, line.width, line_height);
+            xcb_free_pixmap(conn, pixmap);
+        }
+
+        xcb_flush(conn);
+    }
+
+    /* snd_ctl_event_free(event); */
+    return 0;
+}
+
+static void alsa(void)
+{
+    snd_ctl_t* ctls[MAX_SND_CARDS];
+    int ncards = 0;
+    for (int card = -1; snd_card_next(&card) >= 0 && card >= 0;) {
+        char cardname[16];
+        if (ncards >= MAX_SND_CARDS) {
+            fprintf(stderr, "cannot open: too many cards\n");
+            goto error;
+        }
+        sprintf(cardname, "hw:%d", card);
+        if (open_ctl(cardname, &ctls[ncards]) < 0)
+            goto error;
+        ncards++;
+    }
+
+    if (ncards == 0) {
+        fprintf(stderr, "cannot find any snd card\n");
+        goto error;
+    }
+
+    while (1) {
+        struct pollfd fds[ncards];
+        for (int i = 0; i < ncards; i++) {
+            snd_ctl_poll_descriptors(ctls[i], &fds[i], 1);
+        }
+
+        if (poll(fds, ncards, -1) <= 0)
+            break;
+        for (int i = 0; i < ncards; i++) {
+            unsigned short revents;
+            snd_ctl_poll_descriptors_revents(ctls[i], &fds[i], 1, &revents);
+            if (revents & POLLIN)
+                draw_line_volume(i, ctls[i]);
+        }
+    }
+
+error:
+    for (int i = 0; i < ncards; i++)
+        snd_ctl_close(ctls[i]);
+}
+
 int main(void)
 {
     init_xcb();
     create_line_windows();
 
     void* funcs[] = {
-        &i3ipc
+        &i3ipc,
+        &alsa
     };
 
     int num_funcs = sizeof(funcs) / sizeof(funcs[0]);
