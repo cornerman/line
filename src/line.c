@@ -22,6 +22,7 @@ static xcb_gcontext_t focus_fill;
 static xcb_gcontext_t active_fill;
 static xcb_gcontext_t inactive_fill;
 static xcb_gcontext_t off_fill;
+static xcb_gcontext_t volume_fill;
 
 #include <alsa/asoundlib.h>
 #include <stdio.h>
@@ -106,6 +107,7 @@ static void init_xcb(void)
     focus_fill = get_context(color_pixel(FOCUS_COLOR), screen->white_pixel);
     inactive_fill = get_context(color_pixel(INACTIVE_COLOR), screen->white_pixel);
     off_fill = get_context(color_pixel(OFF_COLOR), screen->white_pixel);
+    volume_fill = get_context(color_pixel(VOLUME_COLOR), screen->white_pixel);
 
     request_atoms();
 }
@@ -119,6 +121,7 @@ static void free_xcb(void)
     xcb_free_gc(conn, focus_fill);
     xcb_free_gc(conn, inactive_fill);
     xcb_free_gc(conn, off_fill);
+    xcb_free_gc(conn, volume_fill);
     xcb_free_colormap(conn, colormap);
     xcb_disconnect(conn);
     conn = NULL;
@@ -399,7 +402,7 @@ static void draw_volume(long volume, xcb_drawable_t drawable, line_window_t line
 {
     int width = line.width * volume / 100;
     xcb_rectangle_t rectangles[] = { { 0, 0, width, line_height } };
-    xcb_poly_fill_rectangle(conn, drawable, black_fill, 1, rectangles);
+    xcb_poly_fill_rectangle(conn, drawable, volume_fill, 1, rectangles);
 }
 
 static int draw_line_volume(int card, snd_ctl_t* ctl)
